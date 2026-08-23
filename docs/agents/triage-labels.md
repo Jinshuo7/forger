@@ -6,10 +6,12 @@ The skills speak in terms of five canonical triage roles. This file maps those r
 | -------------------------- | -------------------- | ---------------------------------------- |
 | `needs-triage`             | `needs-triage`       | Maintainer needs to evaluate this issue  |
 | `needs-info`               | `needs-info`         | Waiting on reporter for more information |
-| `ready-for-agent`          | `ready-for-agent`    | Fully specified, ready for an AFK agent  |
+| `ready-for-agent`          | `ready-for-agent`    | Frontier ticket, ready for an AFK agent  |
 | `ready-for-human`          | `ready-for-human`    | Requires human implementation            |
 | `wontfix`                  | `wontfix`            | Will not be actioned                     |
 
 When a skill mentions a role (e.g. "apply the AFK-ready triage label"), use the corresponding label string from this table.
+
+`ready-for-agent` is a frontier label, not a general specification label. Apply it only to an implementation ticket that is fully specified and has no open blockers. Remove it when the ticket gains or reopens a blocker; when a blocker closes, reevaluate its direct dependents and apply the label only to those whose blockers are now all closed. Do not apply it to a parent spec merely because the spec is complete.
 
 Edit the right-hand column to match whatever vocabulary you actually use.

@@ -35,29 +35,10 @@ def reserve_project(projects_root: Path, base_slug: str) -> Path:
             suffix += 1
 
 
-class GenerationMonitor:
-    """Observe and enforce the generation boundary for this slice."""
-
-    KEYFRAME_EVENT = "keyframe_image.generated"
-    FINAL_VIDEO_EVENT = "final_video_job.submitted"
-
-    def __init__(self) -> None:
-        self.events: list[dict[str, str]] = []
-
-    def observe(self, event: dict[str, str]) -> None:
-        self.events.append(event)
-
-    def assert_none_crossed(self) -> None:
-        if self.events:
-            names = ", ".join(event.get("event", "unknown") for event in self.events)
-            raise AssertionError(f"the walking skeleton crossed a generation boundary: {names}")
-
-
-def create_project(workspace: Path, name: str) -> dict[str, object]:
+def create_project(workspace: Path, name: str) -> dict[str, str]:
     project_path = reserve_project(workspace / "forger-projects", slugify(name))
     project_id = str(uuid.uuid4())
     created_at = utc_now()
-    monitor = GenerationMonitor()
 
     manifest = {
         "schemaVersion": "0.0.0-dev",
@@ -72,13 +53,11 @@ def create_project(workspace: Path, name: str) -> dict[str, object]:
     (project_path / "forger.project.json").write_text(
         json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
-    monitor.assert_none_crossed()
 
     return {
         "projectPath": str(project_path),
         "projectId": project_id,
         "phase": "walking-skeleton",
-        "generationEvents": monitor.events,
     }
 
 

@@ -1,14 +1,19 @@
 from __future__ import annotations
 
+import contextlib
 import hashlib
-import importlib.util
+import io
 import json
 import os
+import runpy
 import shutil
+import socket
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -30,13 +35,48 @@ def file_hash(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def load_walking_skeleton(script: Path):
-    spec = importlib.util.spec_from_file_location("forger_walking_skeleton", script)
-    if spec is None or spec.loader is None:
-        raise AssertionError(f"could not load {script}")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+class EgressViolation(AssertionError):
+    pass
+
+
+class EgressGuard:
+    """Fail closed when the invoked skill opens a socket or child process."""
+
+    def __init__(self) -> None:
+        self.triggered: list[str] = []
+        self._patches: list[mock._patch] = []
+
+    def _block(self, boundary: str):
+        def blocked(*_args, **_kwargs):
+            self.triggered.append(boundary)
+            raise EgressViolation(f"blocked generation egress through {boundary}")
+
+        return blocked
+
+    def __enter__(self) -> EgressGuard:
+        self._patches = [
+            mock.patch.object(socket, "socket", new=self._block("socket.socket")),
+            mock.patch.object(subprocess, "Popen", new=self._block("subprocess.Popen")),
+        ]
+        for patcher in self._patches:
+            patcher.start()
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback) -> None:
+        for patcher in reversed(self._patches):
+            patcher.stop()
+
+
+def invoke_under_egress_guard(script: Path, workspace: Path, name: str) -> tuple[dict, list[str]]:
+    output = io.StringIO()
+    argv = [str(script), "--workspace", str(workspace), "--name", name]
+    with (
+        EgressGuard() as guard,
+        mock.patch.object(sys, "argv", argv),
+        contextlib.redirect_stdout(output),
+    ):
+        runpy.run_path(str(script), run_name="__main__")
+    return json.loads(output.getvalue()), guard.triggered
 
 
 class WalkingSkeletonTest(unittest.TestCase):
@@ -76,29 +116,11 @@ class WalkingSkeletonTest(unittest.TestCase):
             self.assertTrue(script.is_file())
 
             workspace = Path(workspace_value)
-            first = json.loads(
-                run(
-                    "python3",
-                    str(script),
-                    "--workspace",
-                    str(workspace),
-                    "--name",
-                    "Neon Walk",
-                ).stdout
-            )
+            first, first_egress = invoke_under_egress_guard(script, workspace, "Neon Walk")
             first_path = Path(first["projectPath"])
             first_snapshot = {path.relative_to(first_path): file_hash(path) for path in first_path.rglob("*") if path.is_file()}
 
-            second = json.loads(
-                run(
-                    "python3",
-                    str(script),
-                    "--workspace",
-                    str(workspace),
-                    "--name",
-                    "Neon Walk",
-                ).stdout
-            )
+            second, second_egress = invoke_under_egress_guard(script, workspace, "Neon Walk")
             second_path = Path(second["projectPath"])
 
             self.assertEqual(first_path.name, "neon-walk")
@@ -121,25 +143,29 @@ class WalkingSkeletonTest(unittest.TestCase):
                 self.assertEqual(manifest["phase"], "walking-skeleton")
                 self.assertNotIn("artifacts", manifest)
 
-            self.assertEqual(first["generationEvents"], [])
-            self.assertEqual(second["generationEvents"], [])
+            self.assertNotIn("generationEvents", first)
+            self.assertNotIn("generationEvents", second)
+            self.assertEqual(first_egress, [])
+            self.assertEqual(second_egress, [])
             self.assertEqual(
                 {path.name for path in workspace.iterdir()},
                 {"forger-projects"},
             )
 
-    def test_boundary_monitor_rejects_any_generation(self) -> None:
-        script = PLUGIN_ROOT / "skills" / "forge-video" / "scripts" / "forge_video.py"
-        module = load_walking_skeleton(script)
-        for event_name in (
-            module.GenerationMonitor.KEYFRAME_EVENT,
-            module.GenerationMonitor.FINAL_VIDEO_EVENT,
-        ):
-            with self.subTest(event=event_name):
-                monitor = module.GenerationMonitor()
-                monitor.observe({"event": event_name})
-                with self.assertRaisesRegex(AssertionError, "crossed a generation boundary"):
-                    monitor.assert_none_crossed()
+    def test_egress_guard_rejects_deliberate_outbound_calls(self) -> None:
+        offenders = (
+            ("socket.socket", lambda: socket.socket()),
+            (
+                "subprocess.Popen",
+                lambda: subprocess.run([sys.executable, "-c", "pass"], check=True),
+            ),
+        )
+        for boundary, offend in offenders:
+            with self.subTest(boundary=boundary):
+                with EgressGuard() as guard:
+                    with self.assertRaisesRegex(EgressViolation, boundary.replace(".", r"\.")):
+                        offend()
+                self.assertEqual(guard.triggered, [boundary])
 
 
 if __name__ == "__main__":

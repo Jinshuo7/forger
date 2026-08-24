@@ -57,7 +57,18 @@ class EgressGuard:
         self._patches = [
             mock.patch.object(socket, "socket", new=self._block("socket.socket")),
             mock.patch.object(subprocess, "Popen", new=self._block("subprocess.Popen")),
+            mock.patch.object(os, "system", new=self._block("os.system")),
+            mock.patch.object(os, "posix_spawn", new=self._block("os.posix_spawn")),
         ]
+        if hasattr(os, "posix_spawnp"):
+            self._patches.append(
+                mock.patch.object(os, "posix_spawnp", new=self._block("os.posix_spawnp"))
+            )
+        self._patches.extend(
+            mock.patch.object(os, name, new=self._block("os.exec*"))
+            for name in dir(os)
+            if name.startswith("exec") and callable(getattr(os, name))
+        )
         for patcher in self._patches:
             patcher.start()
         return self
@@ -158,6 +169,22 @@ class WalkingSkeletonTest(unittest.TestCase):
             (
                 "subprocess.Popen",
                 lambda: subprocess.run([sys.executable, "-c", "pass"], check=True),
+            ),
+            ("os.system", lambda: os.system("true")),
+            (
+                "os.posix_spawn",
+                lambda: os.posix_spawn(
+                    "/definitely-not-a-forger-executable",
+                    ["definitely-not-a-forger-executable"],
+                    os.environ,
+                ),
+            ),
+            (
+                "os.exec*",
+                lambda: os.execv(
+                    "/definitely-not-a-forger-executable",
+                    ["definitely-not-a-forger-executable"],
+                ),
             ),
         )
         for boundary, offend in offenders:

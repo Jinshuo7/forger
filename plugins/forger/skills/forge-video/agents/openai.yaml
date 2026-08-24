@@ -1,0 +1,4 @@
+interface:
+  display_name: "Forge Video"
+  short_description: "Start a collision-safe Forger Project"
+  default_prompt: "Use $forge-video to start a video project called Neon Walk."

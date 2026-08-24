@@ -1,0 +1,20 @@
+{
+  "name": "forger",
+  "version": "0.0.0-dev",
+  "description": "Turn a rough short-form video idea into a reviewable Forger Project.",
+  "author": {
+    "name": "Jinshuo7",
+    "url": "https://github.com/Jinshuo7"
+  },
+  "repository": "https://github.com/Jinshuo7/forger",
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Forger",
+    "shortDescription": "Plan a short-form video without submitting it.",
+    "longDescription": "Forger creates collision-safe video-preproduction projects and develops them through reviewable creative artifacts.",
+    "developerName": "Jinshuo7",
+    "category": "Creativity",
+    "capabilities": ["Interactive", "Write", "Image generation"],
+    "defaultPrompt": "Start a Forger Project for my short-form video idea."
+  }
+}

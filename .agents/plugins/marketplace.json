@@ -1,0 +1,20 @@
+{
+  "name": "forger-development",
+  "interface": {
+    "displayName": "Forger Development"
+  },
+  "plugins": [
+    {
+      "name": "forger",
+      "source": {
+        "source": "local",
+        "path": "./plugins/forger"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Creativity"
+    }
+  ]
+}

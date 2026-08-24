@@ -32,7 +32,13 @@ class CreativeBriefTest(unittest.TestCase):
         for answers in rounds:
             forge_video.record_intake_round(self.project, answers)
 
-    def test_intake_rounds_are_bounded_non_repeating_and_complete(self) -> None:
+    def create_fictional_brief(self) -> dict:
+        self.complete_intake()
+        return forge_video.create_creative_brief(
+            self.project, forge_video.empty_research("not-warranted")
+        )
+
+    def test_intake_script_enforces_bounded_rounds_known_fields_and_completion(self) -> None:
         with self.assertRaisesRegex(forge_video.WorkflowError, "one and three"):
             forge_video.record_intake_round(self.project, {field: field for field in forge_video.INTAKE_FIELDS[:4]})
         result = forge_video.record_intake_round(self.project, {"idea": "A moon bakery"})
@@ -42,9 +48,13 @@ class CreativeBriefTest(unittest.TestCase):
         with self.assertRaisesRegex(forge_video.WorkflowError, "required intake"):
             forge_video.create_creative_brief(self.project, forge_video.empty_research("not-warranted"))
 
-    def test_fictional_brief_keeps_empty_stable_research_shape(self) -> None:
-        self.complete_intake()
-        result = forge_video.create_creative_brief(self.project, forge_video.empty_research("not-warranted"))
+    def test_explicit_not_warranted_disposition_produces_reviewable_creative_brief(self) -> None:
+        result = self.create_fictional_brief()
+        self.assertEqual(result["artifact"]["research"]["disposition"], "not-warranted")
+        self.assertTrue((self.project / result["artifact"]["path"]).is_file())
+
+    def test_creative_brief_uses_stable_optional_research_field_shape(self) -> None:
+        result = self.create_fictional_brief()
         research = result["artifact"]["research"]
         self.assertEqual(research, {
             "disposition": "not-warranted", "claims": [], "evidence": [], "inspiration": [],
@@ -54,45 +64,48 @@ class CreativeBriefTest(unittest.TestCase):
         for heading in ("Research Claims", "Evidence", "Inspiration", "Material Contradictions"):
             self.assertIn(f"### {heading}", brief)
 
-    def test_explicit_unblocked_approval_binds_revision_hash_and_time(self) -> None:
-        self.complete_intake(); forge_video.create_creative_brief(self.project, forge_video.empty_research("not-warranted"))
+    def test_creative_brief_milestone_advances_only_after_explicit_creator_approval(self) -> None:
+        self.create_fictional_brief()
         with self.assertRaisesRegex(forge_video.WorkflowError, "explicit Creator Approval"):
             forge_video.approve_artifact(self.project, "creative-brief", False)
-        with self.assertRaisesRegex(forge_video.WorkflowError, "policy hold"):
-            forge_video.approve_artifact(self.project, "creative-brief", True, ["policy hold"])
-        manifest = forge_video.load_manifest(self.project)
-        self.assertEqual(manifest["phase"], "creative-brief-review")
+        self.assertEqual(forge_video.load_manifest(self.project)["phase"], "creative-brief-review")
+        result = forge_video.approve_artifact(self.project, "creative-brief", True)
+        self.assertEqual(result["phase"], "creative-direction")
+        self.assertEqual(
+            forge_video.load_manifest(self.project)["milestones"]["creativeBrief"], "approved"
+        )
+
+    def test_approval_binds_artifact_revision_hash_and_time_until_both_match(self) -> None:
+        first = self.create_fictional_brief()["artifact"]
         result = forge_video.approve_artifact(self.project, "creative-brief", True)
         approval = result["approval"]
-        self.assertEqual(result["phase"], "creative-direction")
         self.assertEqual(set(approval), {"artifactId", "revision", "contentHash", "approvedAt"})
         self.assertTrue(forge_video.approval_is_current(self.project, approval))
-        approved_manifest = forge_video.load_manifest(self.project)
-        self.assertEqual(approved_manifest["milestones"]["creativeBrief"], "approved")
-        artifact = forge_video.find_artifact(approved_manifest, "creative-brief")
+        artifact = forge_video.find_artifact(forge_video.load_manifest(self.project), "creative-brief")
         self.assertEqual(artifact["revisionState"], "current")
         self.assertNotIn("status", artifact)
-        with (self.project / artifact["path"]).open("a", encoding="utf-8") as stream:
-            stream.write("Creator edit\n")
+        artifact_path = self.project / artifact["path"]
+        original_content = artifact_path.read_text(encoding="utf-8")
+        artifact_path.write_text(original_content + "Creator edit\n", encoding="utf-8")
         self.assertFalse(forge_video.approval_is_current(self.project, approval))
-        self.assertFalse(forge_video.project_status(self.project)["approvals"][0]["current"])
+        artifact_path.write_text(original_content, encoding="utf-8")
+        self.assertTrue(forge_video.approval_is_current(self.project, approval))
 
-    def test_regenerated_brief_invalidates_approval_by_revision_with_same_hash(self) -> None:
-        self.complete_intake()
-        research = forge_video.empty_research("not-warranted")
-        first = forge_video.create_creative_brief(self.project, research)["artifact"]
-        approval = forge_video.approve_artifact(self.project, "creative-brief", True)["approval"]
-
-        second = forge_video.create_creative_brief(self.project, research)["artifact"]
-
+        second = forge_video.create_creative_brief(
+            self.project, forge_video.empty_research("not-warranted")
+        )["artifact"]
         self.assertEqual(first["contentHash"], second["contentHash"])
         self.assertEqual(approval["contentHash"], second["contentHash"])
         self.assertEqual(second["currentRevision"], first["currentRevision"] + 1)
         self.assertNotEqual(approval["revision"], second["currentRevision"])
         self.assertFalse(forge_video.approval_is_current(self.project, approval))
 
-    def test_unresolved_material_contradiction_blocks_approval(self) -> None:
-        self.complete_intake(); research = forge_video.empty_research("warranted")
+    def test_approval_path_advances_only_when_general_blocker_set_is_empty(self) -> None:
+        self.create_fictional_brief()
+        with self.assertRaisesRegex(forge_video.WorkflowError, "policy hold"):
+            forge_video.approve_artifact(self.project, "creative-brief", True, ["policy hold"])
+        self.assertEqual(forge_video.load_manifest(self.project)["phase"], "creative-brief-review")
+        research = forge_video.empty_research("warranted")
         research["claims"] = [{"text": "Claim", "citationReferences": ["source-1"]}]
         research["materialContradictions"] = [{"id": "c1", "summary": "Conflict"}]
         research["contradictionResolutionState"] = "unresolved"

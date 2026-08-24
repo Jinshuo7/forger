@@ -151,8 +151,8 @@ class WalkingSkeletonTest(unittest.TestCase):
                     {Path("forger.project.json")},
                 )
                 manifest = json.loads((project_path / "forger.project.json").read_text(encoding="utf-8"))
-                self.assertEqual(manifest["phase"], "walking-skeleton")
-                self.assertNotIn("artifacts", manifest)
+                self.assertEqual(manifest["phase"], "intake")
+                self.assertEqual(manifest["artifacts"], [])
 
             self.assertNotIn("generationEvents", first)
             self.assertNotIn("generationEvents", second)

@@ -64,13 +64,32 @@ class CreativeBriefTest(unittest.TestCase):
         self.assertEqual(manifest["phase"], "creative-brief-review")
         result = forge_video.approve_artifact(self.project, "creative-brief", True)
         approval = result["approval"]
+        self.assertEqual(result["phase"], "creative-direction")
         self.assertEqual(set(approval), {"artifactId", "revision", "contentHash", "approvedAt"})
         self.assertTrue(forge_video.approval_is_current(self.project, approval))
-        artifact = forge_video.find_artifact(forge_video.load_manifest(self.project), "creative-brief")
+        approved_manifest = forge_video.load_manifest(self.project)
+        self.assertEqual(approved_manifest["milestones"]["creativeBrief"], "approved")
+        artifact = forge_video.find_artifact(approved_manifest, "creative-brief")
+        self.assertEqual(artifact["revisionState"], "current")
+        self.assertNotIn("status", artifact)
         with (self.project / artifact["path"]).open("a", encoding="utf-8") as stream:
             stream.write("Creator edit\n")
         self.assertFalse(forge_video.approval_is_current(self.project, approval))
         self.assertFalse(forge_video.project_status(self.project)["approvals"][0]["current"])
+
+    def test_regenerated_brief_invalidates_approval_by_revision_with_same_hash(self) -> None:
+        self.complete_intake()
+        research = forge_video.empty_research("not-warranted")
+        first = forge_video.create_creative_brief(self.project, research)["artifact"]
+        approval = forge_video.approve_artifact(self.project, "creative-brief", True)["approval"]
+
+        second = forge_video.create_creative_brief(self.project, research)["artifact"]
+
+        self.assertEqual(first["contentHash"], second["contentHash"])
+        self.assertEqual(approval["contentHash"], second["contentHash"])
+        self.assertEqual(second["currentRevision"], first["currentRevision"] + 1)
+        self.assertNotEqual(approval["revision"], second["currentRevision"])
+        self.assertFalse(forge_video.approval_is_current(self.project, approval))
 
     def test_unresolved_material_contradiction_blocks_approval(self) -> None:
         self.complete_intake(); research = forge_video.empty_research("warranted")
@@ -80,6 +99,13 @@ class CreativeBriefTest(unittest.TestCase):
         forge_video.create_creative_brief(self.project, research)
         with self.assertRaisesRegex(forge_video.WorkflowError, "Material Contradictions"):
             forge_video.approve_artifact(self.project, "creative-brief", True)
+
+    def test_warranted_research_defaults_unresolved_and_rejects_unknown_state(self) -> None:
+        research = forge_video.empty_research("warranted")
+        self.assertEqual(research["contradictionResolutionState"], "unresolved")
+        research["contradictionResolutionState"] = "assumed-resolved"
+        with self.assertRaisesRegex(forge_video.WorkflowError, "invalid contradiction resolution state"):
+            forge_video.validate_research(research)
 
 
 if __name__ == "__main__": unittest.main()

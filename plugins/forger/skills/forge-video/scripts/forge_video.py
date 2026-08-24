@@ -9,6 +9,7 @@ from typing import Any
 
 INTAKE_FIELDS = ("idea", "purpose", "audience", "channel", "duration", "aspectRatio", "language", "requiredContent", "references", "constraints")
 RESEARCH_FIELDS = ("claims", "evidence", "inspiration", "materialContradictions")
+CONTRADICTION_RESOLUTION_STATES = ("not-applicable", "unresolved", "resolved")
 CREATIVE_BRIEF_ARTIFACT_ID = "creative-brief"
 
 class WorkflowError(ValueError): pass
@@ -71,12 +72,14 @@ def record_intake_round(project: Path, answers: dict[str, Any]) -> dict[str, Any
 
 def empty_research(disposition: str) -> dict[str, Any]:
     return {"disposition": disposition, "claims": [], "evidence": [], "inspiration": [], "materialContradictions": [],
-            "contradictionResolutionState": "not-applicable" if disposition == "not-warranted" else "resolved"}
+            "contradictionResolutionState": "not-applicable" if disposition == "not-warranted" else "unresolved"}
 
 def validate_research(research: dict[str, Any]) -> None:
     required = {"disposition", *RESEARCH_FIELDS, "contradictionResolutionState"}; missing = sorted(required - set(research))
     if missing: raise WorkflowError("research is missing fields: " + ", ".join(missing))
     if research["disposition"] not in ("not-warranted", "warranted"): raise WorkflowError("invalid research disposition")
+    if research["contradictionResolutionState"] not in CONTRADICTION_RESOLUTION_STATES:
+        raise WorkflowError("invalid contradiction resolution state")
     for field in RESEARCH_FIELDS:
         if not isinstance(research[field], list): raise WorkflowError(f"research {field} must be a list")
     for claim in research["claims"]:
@@ -102,8 +105,10 @@ def create_creative_brief(project: Path, research: dict[str, Any]) -> dict[str, 
     if research["disposition"] == "warranted" and not research["claims"]: raise WorkflowError("warranted research requires a Research Claim")
     artifact_dir = project / "artifacts"; artifact_dir.mkdir(exist_ok=True); path = artifact_dir / "creative-brief.md"
     path.write_text(render_creative_brief(manifest["intake"]["answers"], research), encoding="utf-8")
+    previous = next((a for a in manifest["artifacts"] if a["id"] == CREATIVE_BRIEF_ARTIFACT_ID), None)
     artifact = {"id": CREATIVE_BRIEF_ARTIFACT_ID, "type": "creative-brief", "path": str(path.relative_to(project)),
-                "currentRevision": 1, "contentHash": content_hash(path), "status": "current", "research": research}
+                "currentRevision": 1 if previous is None else previous["currentRevision"] + 1,
+                "contentHash": content_hash(path), "revisionState": "current", "research": research}
     manifest["artifacts"] = [a for a in manifest["artifacts"] if a["id"] != artifact["id"]] + [artifact]
     manifest["phase"] = "creative-brief-review"; manifest["milestones"]["creativeBrief"] = "awaiting-approval"; save_manifest(project, manifest)
     return {"phase": manifest["phase"], "artifact": artifact}
@@ -133,7 +138,7 @@ def approve_artifact(project: Path, artifact_id: str, creator_approved: bool, su
     if blockers: raise WorkflowError("approval blocked: " + "; ".join(blockers))
     manifest = load_manifest(project); artifact = find_artifact(manifest, artifact_id)
     approval = {"artifactId": artifact["id"], "revision": artifact["currentRevision"], "contentHash": artifact["contentHash"], "approvedAt": utc_now()}
-    manifest["approvals"] = [a for a in manifest["approvals"] if a["artifactId"] != artifact_id] + [approval]; artifact["status"] = "approved"
+    manifest["approvals"] = [a for a in manifest["approvals"] if a["artifactId"] != artifact_id] + [approval]
     if artifact_id == CREATIVE_BRIEF_ARTIFACT_ID:
         manifest["milestones"]["creativeBrief"] = "approved"; manifest["phase"] = "creative-direction"
     save_manifest(project, manifest); return {"phase": manifest["phase"], "approval": approval, "current": True}

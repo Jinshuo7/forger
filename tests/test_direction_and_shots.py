@@ -246,9 +246,24 @@ class DirectionAndShotTest(unittest.TestCase):
         }
         self.assertEqual(before_approvals, {"creative-brief": True, "direction-wonder": True})
 
+        infeasible_shots = []
+        for index in range(16):
+            shot = dict(self.shots()[0])
+            shot.update({
+                "id": f"infeasible-shot-{index + 1}",
+                "durationSeconds": 15.0 / 16.0,
+                "purpose": f"Required story beat {index + 1}",
+            })
+            infeasible_shots.append(shot)
+        self.assertAlmostEqual(
+            sum(shot["durationSeconds"] for shot in infeasible_shots), 15.0
+        )
         with self.assertRaisesRegex(forge_video.WorkflowError, "at most 15 story beats"):
             forge_video.create_shot_sequence(
-                self.project, self.shots(), self.reference_bible(), required_story_beat_count=16
+                self.project,
+                infeasible_shots,
+                self.reference_bible(),
+                required_story_beat_count=16,
             )
         paused = forge_video.load_manifest(self.project)
         self.assertEqual(paused["milestones"]["creativeBrief"], before_milestones["creativeBrief"])
@@ -352,11 +367,24 @@ class DirectionAndShotTest(unittest.TestCase):
                 "direction-ritual": "Too restrained.",
             },
         )
-        brief = forge_video.find_artifact(
-            forge_video.load_manifest(self.project), "creative-brief"
-        )
+        manifest = forge_video.load_manifest(self.project)
+        brief = forge_video.find_artifact(manifest, "creative-brief")
+        original_revision = brief["currentRevision"]
+
+        # Same content, new Revision invalidates the depended-on Approval.
+        brief["currentRevision"] = original_revision + 1
+        forge_video.save_manifest(self.project, manifest)
+        with self.assertRaisesRegex(forge_video.WorkflowError, "Dependency Approval is not current"):
+            forge_video.approve_artifact(self.project, "direction-wonder", True)
+
+        # Same Revision, new content independently invalidates its hash binding.
+        manifest = forge_video.load_manifest(self.project)
+        brief = forge_video.find_artifact(manifest, "creative-brief")
+        brief["currentRevision"] = original_revision
         brief_path = self.project / brief["path"]
         brief_path.write_text(brief_path.read_text(encoding="utf-8") + "Changed\n", encoding="utf-8")
+        brief["contentHash"] = hashlib.sha256(brief_path.read_bytes()).hexdigest()
+        forge_video.save_manifest(self.project, manifest)
         with self.assertRaisesRegex(forge_video.WorkflowError, "Dependency Approval is not current"):
             forge_video.approve_artifact(self.project, "direction-wonder", True)
         self.assertEqual(
@@ -385,13 +413,26 @@ class DirectionAndShotTest(unittest.TestCase):
         forge_video.create_shot_sequence(
             self.project, self.shots(), self.reference_bible(), required_story_beat_count=3
         )
-        direction = forge_video.find_artifact(
-            forge_video.load_manifest(self.project), "direction-wonder"
-        )
+        manifest = forge_video.load_manifest(self.project)
+        direction = forge_video.find_artifact(manifest, "direction-wonder")
+        original_revision = direction["currentRevision"]
+
+        # Same content, new Revision invalidates the depended-on Approval.
+        direction["currentRevision"] = original_revision + 1
+        forge_video.save_manifest(self.project, manifest)
+        with self.assertRaisesRegex(forge_video.WorkflowError, "Dependency Approval is not current"):
+            forge_video.approve_artifact(self.project, "shot-sequence", True)
+
+        # Same Revision, new content independently invalidates its hash binding.
+        manifest = forge_video.load_manifest(self.project)
+        direction = forge_video.find_artifact(manifest, "direction-wonder")
+        direction["currentRevision"] = original_revision
         direction_path = self.project / direction["path"]
         direction_path.write_text(
             direction_path.read_text(encoding="utf-8") + "Changed\n", encoding="utf-8"
         )
+        direction["contentHash"] = hashlib.sha256(direction_path.read_bytes()).hexdigest()
+        forge_video.save_manifest(self.project, manifest)
         with self.assertRaisesRegex(forge_video.WorkflowError, "Dependency Approval is not current"):
             forge_video.approve_artifact(self.project, "shot-sequence", True)
         self.assertEqual(

@@ -15,10 +15,41 @@ CREATIVE_DIRECTION_MILESTONE = "creativeDirection"
 SHOT_SEQUENCE_MILESTONE = "shotSequence"
 SHOT_DURATION_TOLERANCE_SECONDS = 0.05
 MINIMUM_SHOT_DURATION_SECONDS = 1.0
+MINIMUM_BRIEF_DURATION_SECONDS = 5.0
+MAXIMUM_BRIEF_DURATION_SECONDS = 180.0
 REQUIRED_SHOT_PROPERTIES = (
     "id", "durationSeconds", "purpose", "composition", "framing", "cameraMotion",
     "subjectAction", "lighting", "continuity", "transition", "audio", "dialogue",
     "captions", "editNotes", "visualBoardReferences", "referenceBibleEntityIds",
+)
+NONEMPTY_SHOT_PROPERTIES = (
+    "purpose",
+    "composition",
+    "framing",
+    "cameraMotion",
+    "subjectAction",
+    "lighting",
+    "continuity",
+    "transition",
+    "audio",
+)
+SHOT_MARKDOWN_FIELDS = (
+    ("id", "ID"),
+    ("durationSeconds", "Duration seconds"),
+    ("purpose", "Purpose"),
+    ("composition", "Composition"),
+    ("framing", "Framing"),
+    ("cameraMotion", "Camera motion"),
+    ("subjectAction", "Subject action"),
+    ("lighting", "Lighting"),
+    ("continuity", "Continuity"),
+    ("transition", "Transition"),
+    ("audio", "Audio"),
+    ("dialogue", "Dialogue"),
+    ("captions", "Captions"),
+    ("editNotes", "Edit notes"),
+    ("visualBoardReferences", "Visual Board references"),
+    ("referenceBibleEntityIds", "Reference Bible entity IDs"),
 )
 
 class WorkflowError(ValueError): pass
@@ -75,6 +106,12 @@ def record_intake_round(project: Path, answers: dict[str, Any]) -> dict[str, Any
     if unknown: raise WorkflowError("unknown intake fields: " + ", ".join(unknown))
     empty = sorted(k for k, v in answers.items() if v is None or v == "")
     if empty: raise WorkflowError("intake answers cannot be empty: " + ", ".join(empty))
+    if "duration" in answers:
+        duration_seconds = parse_duration_seconds(answers["duration"])
+        if not MINIMUM_BRIEF_DURATION_SECONDS <= duration_seconds <= MAXIMUM_BRIEF_DURATION_SECONDS:
+            raise WorkflowError(
+                "Creative Brief duration must be between 5 seconds and 3 minutes"
+            )
     manifest = load_manifest(project); intake = manifest["intake"]
     repeated = sorted(set(answers) & set(intake["answers"]))
     if repeated: raise WorkflowError("intake fields already known: " + ", ".join(repeated))
@@ -176,7 +213,19 @@ def create_creative_directions(project: Path, directions: list[dict[str, Any]]) 
     validate_creative_directions(directions)
     manifest = load_manifest(project)
     brief = find_artifact(manifest, CREATIVE_BRIEF_ARTIFACT_ID)
-    prior = {direction["id"]: direction for direction in manifest.get("creativeDirections", [])}
+    brief_approval = next(
+        (
+            approval for approval in manifest["approvals"]
+            if approval["artifactId"] == brief["id"]
+        ),
+        None,
+    )
+    if brief_approval is None or not approval_is_current(project, brief_approval):
+        raise WorkflowError("Creative Directions require a current Creative Brief Approval")
+    prior = {
+        artifact["id"]: artifact for artifact in manifest["artifacts"]
+        if artifact.get("type") == "creative-direction"
+    }
     artifact_dir = project / "artifacts" / "creative-directions"
     artifact_dir.mkdir(parents=True, exist_ok=True)
     records = []
@@ -206,7 +255,7 @@ def create_creative_directions(project: Path, directions: list[dict[str, Any]]) 
         artifact for artifact in manifest["artifacts"]
         if artifact.get("type") != "creative-direction"
     ] + records
-    manifest["creativeDirections"] = records
+    manifest.pop("creativeDirections", None)
     manifest["phase"] = "creative-direction-review"
     if manifest.get("selectedCreativeDirectionId") not in {direction["id"] for direction in records}:
         manifest.pop("selectedCreativeDirectionId", None)
@@ -218,7 +267,12 @@ def create_creative_directions(project: Path, directions: list[dict[str, Any]]) 
 
 def select_creative_direction(project: Path, selected_id: str, rejection_reasons: dict[str, str]) -> dict[str, Any]:
     manifest = load_manifest(project)
-    directions = manifest.get("creativeDirections", [])
+    directions = [
+        artifact for artifact in manifest["artifacts"]
+        if artifact.get("type") == "creative-direction"
+    ]
+    manifest.pop("creativeDirections", None)
+    previously_selected_id = manifest.get("selectedCreativeDirectionId")
     selected = next((direction for direction in directions if direction["id"] == selected_id), None)
     if selected is None:
         raise WorkflowError(f"unknown Creative Direction: {selected_id}")
@@ -237,12 +291,14 @@ def select_creative_direction(project: Path, selected_id: str, rejection_reasons
             direction.setdefault("rejectionHistory", []).append({
                 "reason": rejection_reasons[direction["id"]], "rejectedAt": now
             })
-        artifact = find_artifact(manifest, direction["id"])
-        artifact["selectionState"] = direction["selectionState"]
-        artifact["rejectionHistory"] = direction["rejectionHistory"]
-        artifact["approvalBlockers"] = (
+        direction["approvalBlockers"] = (
             [] if direction["id"] == selected_id else ["Creative Direction is not selected"]
         )
+    if previously_selected_id is not None and previously_selected_id != selected_id:
+        manifest["approvals"] = [
+            approval for approval in manifest["approvals"]
+            if approval["artifactId"] != previously_selected_id
+        ]
     manifest["selectedCreativeDirectionId"] = selected_id
     manifest["milestones"][CREATIVE_DIRECTION_MILESTONE] = "awaiting-approval"
     manifest["phase"] = "creative-direction-review"
@@ -253,12 +309,34 @@ def parse_duration_seconds(value: Any) -> float:
     if isinstance(value, (int, float)) and not isinstance(value, bool):
         duration = float(value)
     elif isinstance(value, str):
-        match = re.fullmatch(r"\s*(\d+(?:\.\d+)?)\s*(?:seconds?|s)?\s*", value, re.IGNORECASE)
-        if not match:
-            raise WorkflowError("Creative Brief duration must be expressed in seconds")
-        duration = float(match.group(1))
+        text = value.strip()
+        combined = re.fullmatch(
+            r"(\d+(?:\.\d+)?)\s*m(?:in(?:ute)?s?)?\s*"
+            r"(\d+(?:\.\d+)?)\s*s(?:ec(?:ond)?s?)?",
+            text,
+            re.IGNORECASE,
+        )
+        clock = re.fullmatch(r"(\d+):(\d{1,2}(?:\.\d+)?)", text)
+        minutes = re.fullmatch(
+            r"(\d+(?:\.\d+)?)\s*(?:minutes?|mins?|m)", text, re.IGNORECASE
+        )
+        seconds = re.fullmatch(
+            r"(\d+(?:\.\d+)?)\s*(?:seconds?|s)?", text, re.IGNORECASE
+        )
+        if combined:
+            duration = float(combined.group(1)) * 60 + float(combined.group(2))
+        elif clock and float(clock.group(2)) < 60:
+            duration = float(clock.group(1)) * 60 + float(clock.group(2))
+        elif minutes:
+            duration = float(minutes.group(1)) * 60
+        elif seconds:
+            duration = float(seconds.group(1))
+        else:
+            raise WorkflowError(
+                "Creative Brief duration must be expressed in seconds or minutes"
+            )
     else:
-        raise WorkflowError("Creative Brief duration must be expressed in seconds")
+        raise WorkflowError("Creative Brief duration must be expressed in seconds or minutes")
     if duration <= 0:
         raise WorkflowError("Creative Brief duration must be positive")
     return duration
@@ -284,6 +362,14 @@ def validate_shots(shots: list[dict[str, Any]], reference_entity_ids: set[str]) 
         missing = [field for field in REQUIRED_SHOT_PROPERTIES if field not in shot]
         if missing:
             raise WorkflowError(f"Shot {index} is missing required properties: " + ", ".join(missing))
+        empty = [
+            field for field in NONEMPTY_SHOT_PROPERTIES
+            if not isinstance(shot[field], str) or not shot[field].strip()
+        ]
+        if empty:
+            raise WorkflowError(
+                f"Shot {index} requires non-empty values for: " + ", ".join(empty)
+            )
         if not isinstance(shot["durationSeconds"], (int, float)) or isinstance(shot["durationSeconds"], bool):
             raise WorkflowError(f"Shot {index} durationSeconds must be numeric")
         if not isinstance(shot["referenceBibleEntityIds"], list):
@@ -334,7 +420,19 @@ def render_shot_sequence(
     lines += [f"- `{entity['id']}` ({entity['type']}): {entity['name']}" for entity in reference_bible] or ["None."]
     lines += ["", "## Shots", ""]
     for shot in shots:
-        lines += [f"### {shot['id']}", "", f"```json\n{json.dumps(shot, ensure_ascii=False, sort_keys=True)}\n```", ""]
+        lines += [f"### {shot['id']}", ""]
+        for field, label in SHOT_MARKDOWN_FIELDS:
+            value = shot[field]
+            if value == "" or value == []:
+                rendered_value = "None."
+            elif isinstance(value, list):
+                rendered_value = ", ".join(str(item) for item in value)
+            elif isinstance(value, (int, float)) and not isinstance(value, bool):
+                rendered_value = f"{value:g}"
+            else:
+                rendered_value = str(value)
+            lines.append(f"- {label}: {rendered_value}")
+        lines.append("")
     return "\n".join(lines)
 
 def create_shot_sequence(

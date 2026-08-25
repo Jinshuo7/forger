@@ -48,6 +48,41 @@ class CreativeBriefTest(unittest.TestCase):
         with self.assertRaisesRegex(forge_video.WorkflowError, "required intake"):
             forge_video.create_creative_brief(self.project, forge_video.empty_research("not-warranted"))
 
+    def test_intake_accepts_minutes_expressed_durations(self) -> None:
+        fixtures = {
+            "1 minute": 60.0,
+            "1m30s": 90.0,
+            "1:30": 90.0,
+        }
+        for duration, expected_seconds in fixtures.items():
+            with self.subTest(duration=duration):
+                project = Path(
+                    forge_video.create_project(
+                        Path(self.temp.name), f"Duration {duration}"
+                    )["projectPath"]
+                )
+                forge_video.record_intake_round(project, {"duration": duration})
+                recorded = forge_video.load_manifest(project)["intake"]["answers"]["duration"]
+                self.assertEqual(recorded, duration)
+                self.assertEqual(
+                    forge_video.parse_duration_seconds(recorded), expected_seconds
+                )
+
+    def test_intake_rejects_unparseable_and_out_of_scope_durations(self) -> None:
+        for duration in ("soon", "4 seconds", "181 seconds"):
+            with self.subTest(duration=duration):
+                project = Path(
+                    forge_video.create_project(
+                        Path(self.temp.name), f"Invalid duration {duration}"
+                    )["projectPath"]
+                )
+                with self.assertRaisesRegex(forge_video.WorkflowError, "duration"):
+                    forge_video.record_intake_round(project, {"duration": duration})
+                self.assertNotIn(
+                    "duration",
+                    forge_video.load_manifest(project)["intake"]["answers"],
+                )
+
     def test_explicit_not_warranted_disposition_produces_reviewable_creative_brief(self) -> None:
         result = self.create_fictional_brief()
         self.assertEqual(result["artifact"]["research"]["disposition"], "not-warranted")

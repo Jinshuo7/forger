@@ -63,6 +63,12 @@ class DirectionAndShotTest(unittest.TestCase):
             },
         ]
 
+    def creative_direction_artifacts(self, manifest: dict) -> list[dict]:
+        return [
+            artifact for artifact in manifest["artifacts"]
+            if artifact["type"] == "creative-direction"
+        ]
+
     def select_and_approve_direction(self) -> dict:
         forge_video.create_creative_directions(self.project, self.directions())
         forge_video.select_creative_direction(
@@ -74,6 +80,18 @@ class DirectionAndShotTest(unittest.TestCase):
             },
         )
         return forge_video.approve_artifact(self.project, "direction-wonder", True)
+
+    def select_direction_at_revision_two(self) -> None:
+        forge_video.create_creative_directions(self.project, self.directions())
+        forge_video.create_creative_directions(self.project, self.directions())
+        forge_video.select_creative_direction(
+            self.project,
+            "direction-wonder",
+            {
+                "direction-heist": "Comedy undercuts the sense of wonder.",
+                "direction-ritual": "Too restrained for the channel.",
+            },
+        )
 
     def reference_bible(self) -> list[dict]:
         return [
@@ -138,15 +156,21 @@ class DirectionAndShotTest(unittest.TestCase):
         self.assertNotIn("creativeDirections", forge_video.load_manifest(self.project))
 
     def test_direction_contract_gate_meta_test_drives_each_cardinality_marker_and_axis_violation(self) -> None:
-        fixtures = {}
-        fixtures["exactly three"] = self.directions()[:2]
+        fixtures = []
+        fixtures.append(("exactly three", self.directions()[:2]))
         no_recommendation = self.directions()
         no_recommendation[0]["recommended"] = False
-        fixtures["exactly one"] = no_recommendation
+        fixtures.append(("exactly one", no_recommendation))
+        two_recommendations = self.directions()
+        two_recommendations[1]["recommended"] = True
+        fixtures.append(("exactly one", two_recommendations))
         empty_axis = self.directions()
         empty_axis[0]["narrativeAxis"] = ""
-        fixtures["non-empty"] = empty_axis
-        for message, directions in fixtures.items():
+        fixtures.append((
+            "narrative and aesthetic axes must be non-empty",
+            empty_axis,
+        ))
+        for message, directions in fixtures:
             with self.subTest(message=message):
                 with self.assertRaisesRegex(forge_video.WorkflowError, message):
                     forge_video.create_creative_directions(self.project, directions)
@@ -162,8 +186,10 @@ class DirectionAndShotTest(unittest.TestCase):
             },
         )
         manifest = forge_video.load_manifest(self.project)
+        self.assertNotIn("creativeDirections", manifest)
+        directions = self.creative_direction_artifacts(manifest)
         rejected = {
-            d["id"]: d["rejectionHistory"] for d in manifest["creativeDirections"]
+            d["id"]: d["rejectionHistory"] for d in directions
             if d["selectionState"] == "rejected"
         }
         self.assertEqual(set(rejected), {"direction-heist", "direction-ritual"})
@@ -172,9 +198,11 @@ class DirectionAndShotTest(unittest.TestCase):
         # Regeneration cannot silently select a rejected direction.
         forge_video.create_creative_directions(self.project, self.directions())
         manifest = forge_video.load_manifest(self.project)
+        self.assertNotIn("creativeDirections", manifest)
+        directions = self.creative_direction_artifacts(manifest)
         self.assertEqual(manifest["selectedCreativeDirectionId"], "direction-wonder")
         self.assertEqual(
-            next(d for d in manifest["creativeDirections"] if d["id"] == "direction-heist")["selectionState"],
+            next(d for d in directions if d["id"] == "direction-heist")["selectionState"],
             "rejected",
         )
 
@@ -188,10 +216,15 @@ class DirectionAndShotTest(unittest.TestCase):
             },
         )
         manifest = forge_video.load_manifest(self.project)
+        directions = self.creative_direction_artifacts(manifest)
         self.assertEqual(manifest["selectedCreativeDirectionId"], "direction-heist")
-        self.assertGreaterEqual(
-            len(next(d for d in manifest["creativeDirections"] if d["id"] == "direction-heist")["rejectionHistory"]),
-            1,
+        heist_history = next(
+            d for d in directions if d["id"] == "direction-heist"
+        )["rejectionHistory"]
+        self.assertEqual(len(heist_history), 1)
+        self.assertEqual(
+            heist_history[0]["reason"],
+            "Comedy undercuts the sense of wonder.",
         )
 
     def test_selection_gate_meta_test_requires_all_rejection_reasons_and_selected_approval(self) -> None:
@@ -205,6 +238,37 @@ class DirectionAndShotTest(unittest.TestCase):
         self.assertNotIn("selectedCreativeDirectionId", forge_video.load_manifest(self.project))
         with self.assertRaisesRegex(forge_video.WorkflowError, "not selected"):
             forge_video.approve_artifact(self.project, "direction-heist", True)
+
+    def test_reselection_invalidates_previous_direction_approval_and_reopens_milestone(self) -> None:
+        self.select_and_approve_direction()
+        before = forge_video.load_manifest(self.project)
+        previously_selected_id = before["selectedCreativeDirectionId"]
+        previously_selected = forge_video.find_artifact(before, previously_selected_id)
+        self.assertEqual(previously_selected["selectionState"], "selected")
+        self.assertTrue(any(
+            approval["artifactId"] == previously_selected["id"]
+            and forge_video.approval_is_current(self.project, approval)
+            for approval in before["approvals"]
+        ))
+
+        forge_video.select_creative_direction(
+            self.project,
+            "direction-heist",
+            {
+                "direction-wonder": "The Creator chose a more playful direction.",
+                "direction-ritual": "Still too restrained.",
+            },
+        )
+
+        after = forge_video.load_manifest(self.project)
+        previously_selected = forge_video.find_artifact(after, previously_selected_id)
+        self.assertEqual(previously_selected["selectionState"], "rejected")
+        self.assertFalse(any(
+            approval["artifactId"] == previously_selected["id"]
+            and forge_video.approval_is_current(self.project, approval)
+            for approval in after["approvals"]
+        ))
+        self.assertEqual(after["milestones"]["creativeDirection"], "awaiting-approval")
 
     def test_shot_contract_requires_every_property_and_known_reference_bible_entities(self) -> None:
         self.select_and_approve_direction()
@@ -224,6 +288,22 @@ class DirectionAndShotTest(unittest.TestCase):
                 self.project, shots, self.reference_bible(), required_story_beat_count=3
             )
 
+    def test_shot_contract_rejects_all_keys_present_with_all_values_empty(self) -> None:
+        self.select_and_approve_direction()
+        empty_shot = {
+            property_name: ""
+            for property_name in forge_video.REQUIRED_SHOT_PROPERTIES
+        }
+        with self.assertRaisesRegex(
+            forge_video.WorkflowError, "non-empty.*purpose"
+        ):
+            forge_video.create_shot_sequence(
+                self.project,
+                [empty_shot],
+                self.reference_bible(),
+                required_story_beat_count=1,
+            )
+
     def test_shot_contract_gate_meta_test_drives_a_real_missing_property_violation(self) -> None:
         self.select_and_approve_direction()
         shots = self.shots()
@@ -235,6 +315,36 @@ class DirectionAndShotTest(unittest.TestCase):
         self.assertNotIn("shot-sequence", {
             artifact["id"] for artifact in forge_video.load_manifest(self.project)["artifacts"]
         })
+
+    def test_shot_sequence_renders_sixteen_named_markdown_fields(self) -> None:
+        self.select_and_approve_direction()
+        artifact = forge_video.create_shot_sequence(
+            self.project, self.shots(), self.reference_bible(), required_story_beat_count=3
+        )["artifact"]
+        rendered = (self.project / artifact["path"]).read_text(encoding="utf-8")
+
+        self.assertNotIn("```json", rendered)
+        self.assertNotIn('"cameraMotion":', rendered)
+        for expected_line in (
+            "- ID: shot-1",
+            "- Duration seconds: 5",
+            "- Purpose: Establish the bakery",
+            "- Composition: Layered foreground and background",
+            "- Framing: Medium-wide 35mm equivalent",
+            "- Camera motion: Slow push in",
+            "- Subject action: Mina works the dough",
+            "- Lighting: Warm oven key with cool moon fill",
+            "- Continuity: Crescent loaf remains flour-dusted",
+            "- Transition: Match cut on the crescent shape",
+            "- Audio: Soft room tone and oven crackle",
+            "- Dialogue: None.",
+            "- Captions: None.",
+            "- Edit notes: Cut on action",
+            "- Visual Board references: None.",
+            "- Reference Bible entity IDs: character-baker, prop-crescent-loaf",
+        ):
+            with self.subTest(expected_line=expected_line):
+                self.assertIn(expected_line, rendered)
 
     def test_timing_monitor_discriminates_fixtures_and_pauses_only_shot_sequence(self) -> None:
         self.select_and_approve_direction()
@@ -310,7 +420,7 @@ class DirectionAndShotTest(unittest.TestCase):
         self.select_and_approve_direction()
         shots = self.shots()
         shots[0]["durationSeconds"] = 0.5
-        shots[1]["durationSeconds"] = 5.5
+        shots[1]["durationSeconds"] = 9.5
         with self.assertRaisesRegex(forge_video.WorkflowError, "must be at least 1 second"):
             forge_video.create_shot_sequence(
                 self.project, shots, self.reference_bible(), required_story_beat_count=3
@@ -357,6 +467,13 @@ class DirectionAndShotTest(unittest.TestCase):
         )
         self.assert_approval_binding("direction-wonder", result["approval"])
 
+    def test_creative_direction_approval_records_revision_two_literally(self) -> None:
+        self.select_direction_at_revision_two()
+        approval = forge_video.approve_artifact(
+            self.project, "direction-wonder", True
+        )["approval"]
+        self.assertEqual(approval["revision"], 2)
+
     def test_direction_dependency_gate_meta_test_rejects_a_stale_brief_approval(self) -> None:
         forge_video.create_creative_directions(self.project, self.directions())
         forge_video.select_creative_direction(
@@ -392,6 +509,30 @@ class DirectionAndShotTest(unittest.TestCase):
             "awaiting-approval",
         )
 
+    def test_creative_directions_require_a_creative_brief_approval(self) -> None:
+        manifest = forge_video.load_manifest(self.project)
+        manifest["approvals"] = [
+            approval for approval in manifest["approvals"]
+            if approval["artifactId"] != "creative-brief"
+        ]
+        forge_video.save_manifest(self.project, manifest)
+
+        with self.assertRaisesRegex(
+            forge_video.WorkflowError, "current Creative Brief Approval"
+        ):
+            forge_video.create_creative_directions(self.project, self.directions())
+
+    def test_creative_directions_require_the_brief_approval_to_be_current(self) -> None:
+        manifest = forge_video.load_manifest(self.project)
+        brief = forge_video.find_artifact(manifest, "creative-brief")
+        brief["currentRevision"] += 1
+        forge_video.save_manifest(self.project, manifest)
+
+        with self.assertRaisesRegex(
+            forge_video.WorkflowError, "current Creative Brief Approval"
+        ):
+            forge_video.create_creative_directions(self.project, self.directions())
+
     def test_shot_sequence_approval_binds_identity_revision_hash_and_time(self) -> None:
         direction = self.select_and_approve_direction()["approval"]
         result = forge_video.create_shot_sequence(
@@ -407,6 +548,30 @@ class DirectionAndShotTest(unittest.TestCase):
             forge_video.load_manifest(self.project)["milestones"]["shotSequence"], "approved"
         )
         self.assert_approval_binding("shot-sequence", approval_result["approval"])
+
+    def test_shot_sequence_records_direction_revision_two_dependency_literally(self) -> None:
+        self.select_direction_at_revision_two()
+        forge_video.approve_artifact(self.project, "direction-wonder", True)
+        artifact = forge_video.create_shot_sequence(
+            self.project, self.shots(), self.reference_bible(), required_story_beat_count=3
+        )["artifact"]
+        self.assertEqual(
+            artifact["dependencies"],
+            [{"artifactId": "direction-wonder", "revision": 2}],
+        )
+
+    def test_shot_sequence_approval_records_revision_two_literally(self) -> None:
+        self.select_and_approve_direction()
+        forge_video.create_shot_sequence(
+            self.project, self.shots(), self.reference_bible(), required_story_beat_count=3
+        )
+        forge_video.create_shot_sequence(
+            self.project, self.shots(), self.reference_bible(), required_story_beat_count=3
+        )
+        approval = forge_video.approve_artifact(
+            self.project, "shot-sequence", True
+        )["approval"]
+        self.assertEqual(approval["revision"], 2)
 
     def test_shot_sequence_dependency_gate_meta_test_rejects_stale_direction_approval(self) -> None:
         self.select_and_approve_direction()

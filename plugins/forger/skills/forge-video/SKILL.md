@@ -18,4 +18,11 @@ Create or resume the Forger Project, then guide the Creator through the Creative
 9. Treat a timing refusal as a Shot Sequence decision only. Present the arithmetic and concrete correction from the script, revise the timing inputs with the Creator, and leave the approved Creative Brief and Creative Direction untouched. Once feasible, present the complete Shot Sequence and Reference Bible, ask for Approval, and record it with `python3 scripts/forge_video.py approve --project <projectPath> --artifact shot-sequence --creator-approved`.
 10. On resume, run `python3 scripts/forge_video.py status --project <projectPath>`. An Approval is current only while its Artifact identity, Current Revision, recorded content hash, and on-disk content all match. A dependent Approval also requires the Approval bound to each declared Dependency Revision to remain current.
 
+## Verification boundary
+
+Two acceptance criteria require model judgment and are verified manually rather than by automated tests:
+
+- Materially distinct Creative Direction alternatives: the script enforces exactly three directions, exactly one recommendation, non-empty axes, and non-identical narrative/aesthetic axis pairs. A competent paraphrase can satisfy all four checks, so the model must still judge whether the alternatives differ materially.
+- Complete recurring-entity declarations: the script verifies only that declared `referenceBibleEntityIds` resolve to Reference Bible entries. A Shot with an empty list validates regardless of its content, so the model must still verify that every featured recurring entity is declared.
+
 Cross no image- or video-generation boundary in this slice. Keyframe generation begins later, after prerequisite Approvals; submitting or managing a Final Video Job remains outside Forger.

@@ -155,6 +155,22 @@ class DirectionAndShotTest(unittest.TestCase):
             forge_video.create_creative_directions(self.project, directions)
         self.assertNotIn("creativeDirections", forge_video.load_manifest(self.project))
 
+    def test_direction_contract_rejects_slug_collisions_before_writing_artifacts(self) -> None:
+        directions = self.directions()
+        directions[0]["id"] = "direction-wonder"
+        directions[1]["id"] = "direction_wonder"
+
+        with self.assertRaisesRegex(
+            forge_video.WorkflowError,
+            "Creative Direction ids must produce unique artifact paths",
+        ):
+            forge_video.create_creative_directions(self.project, directions)
+
+        manifest = forge_video.load_manifest(self.project)
+        self.assertEqual(self.creative_direction_artifacts(manifest), [])
+        artifact_dir = self.project / "artifacts" / "creative-directions"
+        self.assertEqual(list(artifact_dir.glob("*.md")), [])
+
     def test_direction_contract_gate_meta_test_drives_each_cardinality_marker_and_axis_violation(self) -> None:
         fixtures = []
         fixtures.append(("exactly three", self.directions()[:2]))
@@ -334,18 +350,42 @@ class DirectionAndShotTest(unittest.TestCase):
                 self.project, shots, self.reference_bible(), required_story_beat_count=3
             )
 
-    def test_shot_contract_rejects_all_keys_present_with_all_values_empty(self) -> None:
+    def test_shot_contract_rejects_empty_meaningful_values_with_all_keys_present(self) -> None:
         self.select_and_approve_direction()
         empty_shot = {
             property_name: ""
             for property_name in forge_video.REQUIRED_SHOT_PROPERTIES
         }
+        empty_shot.update({
+            "id": "shot-empty-values",
+            "durationSeconds": 15.0,
+            "visualBoardReferences": [],
+            "referenceBibleEntityIds": [],
+        })
         with self.assertRaisesRegex(
             forge_video.WorkflowError, "non-empty.*purpose"
         ):
             forge_video.create_shot_sequence(
                 self.project,
                 [empty_shot],
+                self.reference_bible(),
+                required_story_beat_count=1,
+            )
+
+    def test_shot_contract_requires_a_nonempty_string_id(self) -> None:
+        self.select_and_approve_direction()
+        shot = {
+            **self.shots()[0],
+            "id": "",
+            "durationSeconds": 15.0,
+            "purpose": "Carry the complete story in one Shot",
+        }
+        with self.assertRaisesRegex(
+            forge_video.WorkflowError, "Shot 1 id must be a non-empty string"
+        ):
+            forge_video.create_shot_sequence(
+                self.project,
+                [shot],
                 self.reference_bible(),
                 required_story_beat_count=1,
             )

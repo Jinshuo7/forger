@@ -193,6 +193,8 @@ def validate_creative_directions(directions: list[dict[str, Any]]) -> None:
         for direction in directions for field in ("id", "title")
     ):
         raise WorkflowError("Creative Direction identity and title must be non-empty")
+    if len({slugify(direction["id"]) for direction in directions}) != len(directions):
+        raise WorkflowError("Creative Direction ids must produce unique artifact paths")
     if any(not isinstance(direction["recommended"], bool) for direction in directions):
         raise WorkflowError("Creative Direction recommended marks must be boolean")
     if sum(direction["recommended"] is True for direction in directions) != 1:
@@ -359,6 +361,8 @@ def validate_shots(shots: list[dict[str, Any]], reference_entity_ids: set[str]) 
         missing = [field for field in REQUIRED_SHOT_PROPERTIES if field not in shot]
         if missing:
             raise WorkflowError(f"Shot {index} is missing required properties: " + ", ".join(missing))
+        if not isinstance(shot["id"], str) or not shot["id"].strip():
+            raise WorkflowError(f"Shot {index} id must be a non-empty string")
         empty = [
             field for field in NONEMPTY_SHOT_PROPERTIES
             if not isinstance(shot[field], str) or not shot[field].strip()

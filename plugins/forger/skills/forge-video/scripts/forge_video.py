@@ -361,8 +361,6 @@ def validate_shots(shots: list[dict[str, Any]], reference_entity_ids: set[str]) 
         missing = [field for field in REQUIRED_SHOT_PROPERTIES if field not in shot]
         if missing:
             raise WorkflowError(f"Shot {index} is missing required properties: " + ", ".join(missing))
-        if not isinstance(shot["id"], str) or not shot["id"].strip():
-            raise WorkflowError(f"Shot {index} id must be a non-empty string")
         empty = [
             field for field in NONEMPTY_SHOT_PROPERTIES
             if not isinstance(shot[field], str) or not shot[field].strip()
@@ -371,6 +369,8 @@ def validate_shots(shots: list[dict[str, Any]], reference_entity_ids: set[str]) 
             raise WorkflowError(
                 f"Shot {index} requires non-empty values for: " + ", ".join(empty)
             )
+        if not isinstance(shot["id"], str) or not shot["id"].strip():
+            raise WorkflowError(f"Shot {index} id must be a non-empty string")
         if not isinstance(shot["durationSeconds"], (int, float)) or isinstance(shot["durationSeconds"], bool):
             raise WorkflowError(f"Shot {index} durationSeconds must be numeric")
         if not isinstance(shot["referenceBibleEntityIds"], list):

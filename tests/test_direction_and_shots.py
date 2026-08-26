@@ -350,18 +350,12 @@ class DirectionAndShotTest(unittest.TestCase):
                 self.project, shots, self.reference_bible(), required_story_beat_count=3
             )
 
-    def test_shot_contract_rejects_empty_meaningful_values_with_all_keys_present(self) -> None:
+    def test_shot_contract_rejects_all_keys_present_with_all_values_empty(self) -> None:
         self.select_and_approve_direction()
         empty_shot = {
             property_name: ""
             for property_name in forge_video.REQUIRED_SHOT_PROPERTIES
         }
-        empty_shot.update({
-            "id": "shot-empty-values",
-            "durationSeconds": 15.0,
-            "visualBoardReferences": [],
-            "referenceBibleEntityIds": [],
-        })
         with self.assertRaisesRegex(
             forge_video.WorkflowError, "non-empty.*purpose"
         ):

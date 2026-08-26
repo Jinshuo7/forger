@@ -213,14 +213,8 @@ def create_creative_directions(project: Path, directions: list[dict[str, Any]]) 
     validate_creative_directions(directions)
     manifest = load_manifest(project)
     brief = find_artifact(manifest, CREATIVE_BRIEF_ARTIFACT_ID)
-    brief_approval = next(
-        (
-            approval for approval in manifest["approvals"]
-            if approval["artifactId"] == brief["id"]
-        ),
-        None,
-    )
-    if brief_approval is None or not approval_is_current(project, brief_approval):
+    brief_approval = current_approval(project, manifest, brief["id"])
+    if brief_approval is None:
         raise WorkflowError("Creative Directions require a current Creative Brief Approval")
     prior = {
         artifact["id"]: artifact for artifact in manifest["artifacts"]
@@ -295,10 +289,13 @@ def select_creative_direction(project: Path, selected_id: str, rejection_reasons
             [] if direction["id"] == selected_id else ["Creative Direction is not selected"]
         )
     if previously_selected_id is not None and previously_selected_id != selected_id:
-        manifest["approvals"] = [
-            approval for approval in manifest["approvals"]
-            if approval["artifactId"] != previously_selected_id
-        ]
+        previously_selected = find_artifact(manifest, previously_selected_id)
+        previously_selected["currentRevision"] += 1
+        previously_selected_path = project / previously_selected["path"]
+        previously_selected_path.write_text(
+            render_creative_direction(previously_selected), encoding="utf-8"
+        )
+        previously_selected["contentHash"] = content_hash(previously_selected_path)
     manifest["selectedCreativeDirectionId"] = selected_id
     manifest["milestones"][CREATIVE_DIRECTION_MILESTONE] = "awaiting-approval"
     manifest["phase"] = "creative-direction-review"
@@ -449,10 +446,8 @@ def create_shot_sequence(
         raise WorkflowError("Shot Sequence requires an explicitly selected Creative Direction")
     selected = find_artifact(manifest, selected_id)
     brief = find_artifact(manifest, CREATIVE_BRIEF_ARTIFACT_ID)
-    brief_approval = next(
-        (approval for approval in manifest["approvals"] if approval["artifactId"] == brief["id"]), None
-    )
-    if brief_approval is None or not approval_is_current(project, brief_approval):
+    brief_approval = current_approval(project, manifest, brief["id"])
+    if brief_approval is None:
         raise WorkflowError("Shot Sequence timing requires a current Creative Brief Approval")
     brief_duration = parse_duration_seconds(manifest["intake"]["answers"]["duration"])
     blockers = timing_blockers(shots, brief_duration, required_story_beat_count)
@@ -496,23 +491,43 @@ def approval_is_current(project: Path, approval: dict[str, Any]) -> bool:
     except (WorkflowError, FileNotFoundError): return False
     return approval.get("revision") == artifact.get("currentRevision") and approval.get("contentHash") == artifact.get("contentHash") == actual
 
+def current_approval(
+    project: Path,
+    manifest: dict[str, Any],
+    artifact_id: str,
+    revision: int | None = None,
+) -> dict[str, Any] | None:
+    return next(
+        (
+            approval for approval in reversed(manifest["approvals"])
+            if approval["artifactId"] == artifact_id
+            and (revision is None or approval.get("revision") == revision)
+            and approval_is_current(project, approval)
+        ),
+        None,
+    )
+
 def approval_blockers(project: Path, artifact_id: str, supplied: list[str] | None = None) -> list[str]:
     manifest = load_manifest(project); artifact = find_artifact(manifest, artifact_id); blockers = list(supplied or []); path = project / artifact["path"]
     if not path.is_file(): blockers.append("Artifact content is missing")
     elif content_hash(path) != artifact["contentHash"]: blockers.append("Artifact content changed after the current Revision was recorded")
     blockers.extend(artifact.get("approvalBlockers", []))
     for dependency in artifact.get("dependencies", []):
-        approval = next(
-            (candidate for candidate in manifest["approvals"] if candidate["artifactId"] == dependency["artifactId"]),
-            None,
-        )
-        if (
-            approval is None
-            or approval.get("revision") != dependency.get("revision")
-            or not approval_is_current(project, approval)
-        ):
+        depended_on = find_artifact(manifest, dependency["artifactId"])
+        if dependency.get("revision") != depended_on.get("currentRevision"):
             blockers.append(
-                f"Dependency Approval is not current: {dependency['artifactId']} Revision {dependency['revision']}"
+                f"Dependency edge is stale: {dependency['artifactId']} records Revision "
+                f"{dependency['revision']} but the Artifact Current Revision is "
+                f"{depended_on['currentRevision']}"
+            )
+            continue
+        approval = current_approval(
+            project, manifest, dependency["artifactId"], dependency["revision"]
+        )
+        if approval is None:
+            blockers.append(
+                f"Dependency Approval is missing or not current: "
+                f"{dependency['artifactId']} Revision {dependency['revision']}"
             )
     return blockers
 
@@ -522,7 +537,7 @@ def approve_artifact(project: Path, artifact_id: str, creator_approved: bool, su
     if blockers: raise WorkflowError("approval blocked: " + "; ".join(blockers))
     manifest = load_manifest(project); artifact = find_artifact(manifest, artifact_id)
     approval = {"artifactId": artifact["id"], "revision": artifact["currentRevision"], "contentHash": artifact["contentHash"], "approvedAt": utc_now()}
-    manifest["approvals"] = [a for a in manifest["approvals"] if a["artifactId"] != artifact_id] + [approval]
+    manifest["approvals"].append(approval)
     workflow = artifact.get("workflow")
     if not workflow:
         raise WorkflowError(f"Artifact has no declared approval workflow: {artifact_id}")

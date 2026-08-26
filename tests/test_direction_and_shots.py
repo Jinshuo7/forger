@@ -245,11 +245,12 @@ class DirectionAndShotTest(unittest.TestCase):
         previously_selected_id = before["selectedCreativeDirectionId"]
         previously_selected = forge_video.find_artifact(before, previously_selected_id)
         self.assertEqual(previously_selected["selectionState"], "selected")
-        self.assertTrue(any(
-            approval["artifactId"] == previously_selected["id"]
-            and forge_video.approval_is_current(self.project, approval)
-            for approval in before["approvals"]
-        ))
+        previous_approval = next(
+            approval for approval in before["approvals"]
+            if approval["artifactId"] == previously_selected["id"]
+        )
+        self.assertTrue(forge_video.approval_is_current(self.project, previous_approval))
+        self.assertEqual(before["milestones"]["creativeDirection"], "approved")
 
         forge_video.select_creative_direction(
             self.project,
@@ -263,12 +264,48 @@ class DirectionAndShotTest(unittest.TestCase):
         after = forge_video.load_manifest(self.project)
         previously_selected = forge_video.find_artifact(after, previously_selected_id)
         self.assertEqual(previously_selected["selectionState"], "rejected")
-        self.assertFalse(any(
-            approval["artifactId"] == previously_selected["id"]
-            and forge_video.approval_is_current(self.project, approval)
-            for approval in after["approvals"]
-        ))
+        retained_approval = next(
+            approval for approval in after["approvals"]
+            if approval["artifactId"] == previously_selected["id"]
+        )
+        self.assertFalse(forge_video.approval_is_current(self.project, retained_approval))
+        self.assertLess(
+            retained_approval["revision"], previously_selected["currentRevision"]
+        )
         self.assertEqual(after["milestones"]["creativeDirection"], "awaiting-approval")
+
+    def test_reapproval_preserves_every_historical_approval(self) -> None:
+        first_approval = self.select_and_approve_direction()["approval"]
+        forge_video.select_creative_direction(
+            self.project,
+            "direction-heist",
+            {
+                "direction-wonder": "The Creator chose a more playful direction.",
+                "direction-ritual": "Still too restrained.",
+            },
+        )
+        forge_video.select_creative_direction(
+            self.project,
+            "direction-wonder",
+            {
+                "direction-heist": "Wonder better serves the intended tone.",
+                "direction-ritual": "Still too restrained.",
+            },
+        )
+        second_approval = forge_video.approve_artifact(
+            self.project, "direction-wonder", True
+        )["approval"]
+
+        approvals = [
+            approval for approval in forge_video.load_manifest(self.project)["approvals"]
+            if approval["artifactId"] == "direction-wonder"
+        ]
+        self.assertEqual(
+            [approval["revision"] for approval in approvals],
+            [first_approval["revision"], second_approval["revision"]],
+        )
+        self.assertFalse(forge_video.approval_is_current(self.project, approvals[0]))
+        self.assertTrue(forge_video.approval_is_current(self.project, approvals[1]))
 
     def test_shot_contract_requires_every_property_and_known_reference_bible_entities(self) -> None:
         self.select_and_approve_direction()
@@ -280,6 +317,15 @@ class DirectionAndShotTest(unittest.TestCase):
                     forge_video.create_shot_sequence(
                         self.project, shots, self.reference_bible(), required_story_beat_count=3
                     )
+
+        shots = self.shots()
+        shots[0]["durationSeconds"] = "five"
+        with self.assertRaisesRegex(
+            forge_video.WorkflowError, "durationSeconds must be numeric"
+        ):
+            forge_video.create_shot_sequence(
+                self.project, shots, self.reference_bible(), required_story_beat_count=3
+            )
 
         shots = self.shots()
         shots[0]["referenceBibleEntityIds"] = ["unknown-character"]
@@ -491,8 +537,12 @@ class DirectionAndShotTest(unittest.TestCase):
         # Same content, new Revision invalidates the depended-on Approval.
         brief["currentRevision"] = original_revision + 1
         forge_video.save_manifest(self.project, manifest)
-        with self.assertRaisesRegex(forge_video.WorkflowError, "Dependency Approval is not current"):
+        with self.assertRaises(forge_video.WorkflowError) as stale_edge:
             forge_video.approve_artifact(self.project, "direction-wonder", True)
+        self.assertIn("Dependency edge is stale", str(stale_edge.exception))
+        self.assertNotIn(
+            "Dependency Approval is missing or not current", str(stale_edge.exception)
+        )
 
         # Same Revision, new content independently invalidates its hash binding.
         manifest = forge_video.load_manifest(self.project)
@@ -502,8 +552,13 @@ class DirectionAndShotTest(unittest.TestCase):
         brief_path.write_text(brief_path.read_text(encoding="utf-8") + "Changed\n", encoding="utf-8")
         brief["contentHash"] = hashlib.sha256(brief_path.read_bytes()).hexdigest()
         forge_video.save_manifest(self.project, manifest)
-        with self.assertRaisesRegex(forge_video.WorkflowError, "Dependency Approval is not current"):
+        with self.assertRaises(forge_video.WorkflowError) as noncurrent_approval:
             forge_video.approve_artifact(self.project, "direction-wonder", True)
+        self.assertIn(
+            "Dependency Approval is missing or not current",
+            str(noncurrent_approval.exception),
+        )
+        self.assertNotIn("Dependency edge is stale", str(noncurrent_approval.exception))
         self.assertEqual(
             forge_video.load_manifest(self.project)["milestones"]["creativeDirection"],
             "awaiting-approval",
@@ -525,7 +580,24 @@ class DirectionAndShotTest(unittest.TestCase):
     def test_creative_directions_require_the_brief_approval_to_be_current(self) -> None:
         manifest = forge_video.load_manifest(self.project)
         brief = forge_video.find_artifact(manifest, "creative-brief")
-        brief["currentRevision"] += 1
+        original_revision = brief["currentRevision"]
+        brief["currentRevision"] = original_revision + 1
+        forge_video.save_manifest(self.project, manifest)
+
+        with self.assertRaisesRegex(
+            forge_video.WorkflowError, "current Creative Brief Approval"
+        ):
+            forge_video.create_creative_directions(self.project, self.directions())
+
+        manifest = forge_video.load_manifest(self.project)
+        brief = forge_video.find_artifact(manifest, "creative-brief")
+        brief["currentRevision"] = original_revision
+        brief_path = self.project / brief["path"]
+        brief_path.write_text(
+            brief_path.read_text(encoding="utf-8") + "Creator changed this Revision.\n",
+            encoding="utf-8",
+        )
+        brief["contentHash"] = hashlib.sha256(brief_path.read_bytes()).hexdigest()
         forge_video.save_manifest(self.project, manifest)
 
         with self.assertRaisesRegex(
@@ -585,8 +657,12 @@ class DirectionAndShotTest(unittest.TestCase):
         # Same content, new Revision invalidates the depended-on Approval.
         direction["currentRevision"] = original_revision + 1
         forge_video.save_manifest(self.project, manifest)
-        with self.assertRaisesRegex(forge_video.WorkflowError, "Dependency Approval is not current"):
+        with self.assertRaises(forge_video.WorkflowError) as stale_edge:
             forge_video.approve_artifact(self.project, "shot-sequence", True)
+        self.assertIn("Dependency edge is stale", str(stale_edge.exception))
+        self.assertNotIn(
+            "Dependency Approval is missing or not current", str(stale_edge.exception)
+        )
 
         # Same Revision, new content independently invalidates its hash binding.
         manifest = forge_video.load_manifest(self.project)
@@ -598,8 +674,13 @@ class DirectionAndShotTest(unittest.TestCase):
         )
         direction["contentHash"] = hashlib.sha256(direction_path.read_bytes()).hexdigest()
         forge_video.save_manifest(self.project, manifest)
-        with self.assertRaisesRegex(forge_video.WorkflowError, "Dependency Approval is not current"):
+        with self.assertRaises(forge_video.WorkflowError) as noncurrent_approval:
             forge_video.approve_artifact(self.project, "shot-sequence", True)
+        self.assertIn(
+            "Dependency Approval is missing or not current",
+            str(noncurrent_approval.exception),
+        )
+        self.assertNotIn("Dependency edge is stale", str(noncurrent_approval.exception))
         self.assertEqual(
             forge_video.load_manifest(self.project)["milestones"]["shotSequence"],
             "awaiting-approval",

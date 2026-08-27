@@ -356,6 +356,12 @@ class DirectionAndShotTest(unittest.TestCase):
             property_name: ""
             for property_name in forge_video.REQUIRED_SHOT_PROPERTIES
         }
+        empty_shot.update({
+            "id": "shot-empty-values",
+            "durationSeconds": 15.0,
+            "visualBoardReferences": [],
+            "referenceBibleEntityIds": [],
+        })
         with self.assertRaisesRegex(
             forge_video.WorkflowError, "non-empty.*purpose"
         ):
@@ -383,6 +389,49 @@ class DirectionAndShotTest(unittest.TestCase):
                 self.reference_bible(),
                 required_story_beat_count=1,
             )
+
+    def test_shot_contract_requires_a_positive_integer_story_beat_count(self) -> None:
+        self.select_and_approve_direction()
+        for invalid_count in (True, 1.5, 0, -1):
+            with self.subTest(required_story_beat_count=invalid_count):
+                with self.assertRaisesRegex(
+                    forge_video.WorkflowError,
+                    "required story-beat count must be a positive integer",
+                ):
+                    forge_video.create_shot_sequence(
+                        self.project,
+                        self.shots(),
+                        self.reference_bible(),
+                        required_story_beat_count=invalid_count,
+                    )
+
+    def test_shot_contract_rejects_more_story_beats_than_shots_in_isolation(self) -> None:
+        self.select_and_approve_direction()
+        shots = self.shots()
+        self.assertTrue(all(
+            shot["durationSeconds"] >= forge_video.MINIMUM_SHOT_DURATION_SECONDS
+            for shot in shots
+        ))
+        self.assertLessEqual(
+            abs(sum(shot["durationSeconds"] for shot in shots) - 15.0),
+            forge_video.SHOT_DURATION_TOLERANCE_SECONDS,
+        )
+        manifest_before = forge_video.load_manifest(self.project)
+
+        with self.assertRaises(forge_video.WorkflowError) as raised:
+            forge_video.create_shot_sequence(
+                self.project,
+                shots,
+                self.reference_bible(),
+                required_story_beat_count=5,
+            )
+
+        message = str(raised.exception)
+        self.assertIn("5 required story beats cannot be realised by 3 Shots", message)
+        self.assertNotIn("must be at least", message)
+        self.assertNotIn("must equal the approved Creative Brief duration", message)
+        manifest = forge_video.load_manifest(self.project)
+        self.assertEqual(manifest, manifest_before)
 
     def test_shot_contract_gate_meta_test_drives_a_real_missing_property_violation(self) -> None:
         self.select_and_approve_direction()

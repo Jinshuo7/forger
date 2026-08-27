@@ -361,6 +361,8 @@ def validate_shots(shots: list[dict[str, Any]], reference_entity_ids: set[str]) 
         missing = [field for field in REQUIRED_SHOT_PROPERTIES if field not in shot]
         if missing:
             raise WorkflowError(f"Shot {index} is missing required properties: " + ", ".join(missing))
+        if not isinstance(shot["id"], str) or not shot["id"].strip():
+            raise WorkflowError(f"Shot {index} id must be a non-empty string")
         empty = [
             field for field in NONEMPTY_SHOT_PROPERTIES
             if not isinstance(shot[field], str) or not shot[field].strip()
@@ -369,8 +371,6 @@ def validate_shots(shots: list[dict[str, Any]], reference_entity_ids: set[str]) 
             raise WorkflowError(
                 f"Shot {index} requires non-empty values for: " + ", ".join(empty)
             )
-        if not isinstance(shot["id"], str) or not shot["id"].strip():
-            raise WorkflowError(f"Shot {index} id must be a non-empty string")
         if not isinstance(shot["durationSeconds"], (int, float)) or isinstance(shot["durationSeconds"], bool):
             raise WorkflowError(f"Shot {index} durationSeconds must be numeric")
         if not isinstance(shot["referenceBibleEntityIds"], list):
@@ -384,11 +384,24 @@ def validate_shots(shots: list[dict[str, Any]], reference_entity_ids: set[str]) 
     if len(ids) != len(set(ids)):
         raise WorkflowError("Shot identities must be unique")
 
+def validate_required_story_beat_count(
+    shots: list[dict[str, Any]], required_story_beat_count: int
+) -> None:
+    if (
+        not isinstance(required_story_beat_count, int)
+        or isinstance(required_story_beat_count, bool)
+        or required_story_beat_count < 1
+    ):
+        raise WorkflowError("required story-beat count must be a positive integer")
+    if required_story_beat_count > len(shots):
+        raise WorkflowError(
+            f"{required_story_beat_count} required story beats cannot be realised by "
+            f"{len(shots)} Shots"
+        )
+
 def timing_blockers(
     shots: list[dict[str, Any]], brief_duration_seconds: float, required_story_beat_count: int
 ) -> list[str]:
-    if not isinstance(required_story_beat_count, int) or isinstance(required_story_beat_count, bool) or required_story_beat_count < 1:
-        raise WorkflowError("required story-beat count must be a positive integer")
     blockers = []
     total = sum(float(shot["durationSeconds"]) for shot in shots)
     if abs(total - brief_duration_seconds) > SHOT_DURATION_TOLERANCE_SECONDS:
@@ -444,6 +457,7 @@ def create_shot_sequence(
 ) -> dict[str, Any]:
     reference_entity_ids = validate_reference_bible(reference_bible)
     validate_shots(shots, reference_entity_ids)
+    validate_required_story_beat_count(shots, required_story_beat_count)
     manifest = load_manifest(project)
     selected_id = manifest.get("selectedCreativeDirectionId")
     if not selected_id:
